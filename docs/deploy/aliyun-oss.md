@@ -85,3 +85,9 @@ prove absence. Retry after the diagnostic fix and use the actual status to
 check RAM/bucket policy, signing configuration, connectivity or the object key.
 OSS HeadObject permission reference:
 https://www.alibabacloud.com/help/en/oss/user-guide/authorization-syntax-and-elements
+
+HEAD verification uses the SDK's presigned query authentication and Workers
+`fetch`, matching the existing PUT/GET transfer path. It still requests the
+same key with the same credentials, endpoint, region and addressing setting.
+It requires a valid Content-Length and ETag before confirmation. A 403 continues
+to fail; no GET-only fallback activates an object and no bucket policy is changed.

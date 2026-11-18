@@ -54,6 +54,7 @@ describe('OSS in Workers using the real S3 SDK', () => {
         const request = new Request(input, init)
         const url = new URL(request.url)
         expect(request.method).toBe('HEAD')
+        expect(url.searchParams.has('X-Amz-Signature')).toBe(true)
         expect(url.hostname).toBe('oss-contract-bucket.s3.oss-cn-beijing.aliyuncs.com')
         expect(url.pathname).toBe('/folder/test.txt')
         return new Response(null, {

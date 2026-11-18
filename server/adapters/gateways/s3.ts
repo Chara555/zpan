@@ -213,11 +213,24 @@ export class S3Service implements S3Gateway {
     key: string,
   ): Promise<{ size: number; contentType?: string; etag: string }> {
     const client = this.createClient(storage)
-    const result = await client.send(new HeadObjectCommand({ Bucket: storage.bucket, Key: key }))
+    // Use the same SDK query signing and Workers fetch path as PUT/GET.
+    // Keep metadata verification: a successful upload is not yet an active file.
+    const url = await getSignedUrl(client, new HeadObjectCommand({ Bucket: storage.bucket, Key: key }), {
+      expiresIn: DEFAULT_EXPIRES_IN,
+    })
+    const response = await this.fetchStorage(url, { method: 'HEAD' }, 'object verification')
+    const length = response.headers.get('content-length')
+    const etag = (response.headers.get('etag') ?? '').trim().replace(/"/g, '')
+    if (length === null || !/^\d+$/.test(length) || !Number.isSafeInteger(Number(length)) || !etag) {
+      throw storageRequestError('object verification', {
+        ...storageResponseDetails(response.status, response.headers),
+        code: 'InvalidObjectMetadata',
+      })
+    }
     return {
-      size: result.ContentLength ?? 0,
-      contentType: result.ContentType,
-      etag: (result.ETag ?? '').replace(/"/g, ''),
+      size: Number(length),
+      contentType: response.headers.get('content-type') ?? undefined,
+      etag,
     }
   }
 

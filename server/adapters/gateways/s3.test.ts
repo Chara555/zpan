@@ -383,24 +383,48 @@ describe('S3Service', () => {
   })
 
   describe('headObject', () => {
-    it('returns size, contentType, and the quote-stripped etag', async () => {
-      mockSend.mockResolvedValueOnce({
-        ContentLength: 1024,
-        ContentType: 'image/png',
-        ETag: '"abc123"',
-        $metadata: {},
-      })
+    it('signs a HEAD request with the stored connection settings and reads verified metadata', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(
+          async () =>
+            new Response(null, {
+              headers: {
+                'content-length': '1024',
+                'content-type': 'image/png',
+                etag: '"abc123"',
+              },
+            }),
+        ),
+      )
       const result = await service.headObject(storage, 'test.png')
       expect(result).toEqual({ size: 1024, contentType: 'image/png', etag: 'abc123' })
-      expect(mockSend).toHaveBeenCalledWith(
+      expect(getSignedUrl).toHaveBeenCalledWith(
+        expect.anything(),
         expect.objectContaining({ input: { Bucket: 'my-bucket', Key: 'test.png' } }),
+        { expiresIn: 3600 },
       )
+      expect(fetch).toHaveBeenCalledWith('https://signed-url.example.com', { method: 'HEAD' })
+      expect(mockSend).not.toHaveBeenCalled()
     })
-
-    it('does not invent a content type when S3 omits it', async () => {
-      mockSend.mockResolvedValueOnce({ $metadata: {} })
-      const result = await service.headObject(storage, 'test.bin')
-      expect(result).toEqual({ size: 0, contentType: undefined, etag: '' })
+    it('does not invent a content type when storage omits it', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(null, { headers: { 'content-length': '0', etag: '"empty-etag"' } })),
+      )
+      expect(await service.headObject(storage, 'test.bin')).toEqual({
+        size: 0,
+        contentType: undefined,
+        etag: 'empty-etag',
+      })
+    })
+    it('rejects missing metadata rather than confirming an unverifiable object', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response(null)),
+      )
+      await expect(service.headObject(storage, 'test.bin')).rejects.toMatchObject({ name: 'InvalidObjectMetadata' })
     })
   })
 
