@@ -819,6 +819,42 @@ describe('object usecase', () => {
       expect(out.ok).toBe(true)
     })
 
+    it.each([
+      [403, 'AccessDenied', 'storage_failure', 'object_verification_failed'],
+      [400, 'SignatureDoesNotMatch', 'storage_failure', 'object_verification_failed'],
+      [503, 'ServiceUnavailable', 'storage_failure', 'object_verification_failed'],
+      [404, 'NotFound', 'invalid_state', 'object_not_found'],
+    ])('classifies HEAD %i without treating every storage error as a missing object', async (status, name, code, reason) => {
+      const activateDraft = vi.fn(),
+        setStatus = vi.fn()
+      const failure = Object.assign(new Error('RAW_SECRET_SIGNED_URL'), {
+        name,
+        $metadata: { httpStatusCode: status, requestId: 'head-id' },
+      })
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft', size: 100 }), activateDraft },
+        s3: {
+          headObject: async () => {
+            throw failure
+          },
+        } as Partial<S3Gateway>,
+        objectUploadSessions: { get: async () => session(), setStatus },
+      })
+      const error = await completeUpload(deps, {
+        orgId: 'o1',
+        objectId: 'd1',
+        sessionId: 'sess-1',
+        actorId: 'u1',
+        parts: [{ partNumber: 1, etag: 'abc' }],
+      }).catch((error) => error)
+      expect(error).toMatchObject({ code, reason })
+      expect(error.message).toContain(String(status))
+      expect(error.message).toContain('head-id')
+      expect(error.message).not.toContain('RAW_SECRET')
+      expect(activateDraft).not.toHaveBeenCalled()
+      expect(setStatus).not.toHaveBeenCalled()
+    })
+
     it('rejects a single-PUT completion whose ETag does not match the HEAD', async () => {
       const draft = file('d1', { status: 'draft', size: 100 })
       const { deps } = makeDeps({

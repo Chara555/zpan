@@ -59,10 +59,29 @@ metadata. It does not contact a real bucket or replace production credentials.
 
 For a real bucket, use the administrator's connection test for browser PUT and
 strict DELETE cleanup, then upload/download a disposable object. Ordinary ZPan
-uploads enter multipart only above 5 GiB; local Workers tests exercise smaller
+uploads enter multipart above 64 MiB; local Workers tests exercise smaller
 multipart data through the existing streamed-upload gateway without changing
 that product threshold.
 
 References:
 - https://developers.cloudflare.com/r2/examples/aws/aws-sdk-js-v3/
 - https://www.alibabacloud.com/help/en/oss/developer-reference/use-aws-sdks-to-access-oss
+
+## PUT succeeds but upload confirmation fails
+
+Normal file completion verifies the object using HEAD before activating the
+file in ZPan. HEAD requires `oss:GetObject` for the same object/prefix. A test
+that only PUTs and DELETEs can succeed while HEAD is denied. Do not remove the
+HEAD or ETag check and do not make the bucket public as a workaround.
+
+Historically every HEAD failure was mislabeled `409 / OBJECT_NOT_FOUND`. Now
+only a real 404/NotFound uses that reason. Permission errors, signing errors,
+provider errors and network failures return `502 / OBJECT_VERIFICATION_FAILED`
+with allowlisted HTTP status, error code and RequestId. Bodyless SDK HEAD errors
+also retain `x-oss-request-id`. The draft stays unconfirmed on any failure.
+
+A browser response showing `OBJECT_NOT_FOUND` from an older deployment does not
+prove absence. Retry after the diagnostic fix and use the actual status to
+check RAM/bucket policy, signing configuration, connectivity or the object key.
+OSS HeadObject permission reference:
+https://www.alibabacloud.com/help/en/oss/user-guide/authorization-syntax-and-elements

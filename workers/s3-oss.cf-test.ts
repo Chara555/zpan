@@ -47,6 +47,51 @@ describe('OSS in Workers using the real S3 SDK', () => {
       $metadata: { httpStatusCode: 403, requestId: 'oss-request-1' },
     })
   })
+  it('verifies the uploaded object with SDK HEAD on the same virtual host', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init)
+        const url = new URL(request.url)
+        expect(request.method).toBe('HEAD')
+        expect(url.hostname).toBe('oss-contract-bucket.s3.oss-cn-beijing.aliyuncs.com')
+        expect(url.pathname).toBe('/folder/test.txt')
+        return new Response(null, {
+          status: 200,
+          headers: {
+            'content-length': '100',
+            'content-type': 'text/plain',
+            etag: '"oss-etag"',
+            'x-oss-request-id': 'head-ok-id',
+          },
+        })
+      }),
+    )
+    await expect(service.headObject(storage, 'folder/test.txt')).resolves.toEqual({
+      size: 100,
+      contentType: 'text/plain',
+      etag: 'oss-etag',
+    })
+  })
+
+  it('retains HTTP status and OSS RequestId when HEAD denies access without an XML body', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(null, {
+            status: 403,
+            headers: { 'x-oss-request-id': 'head-denied-id' },
+          }),
+      ),
+    )
+    const error = await service.headObject(storage, 'folder/test.txt').catch((error) => error)
+    expect(error).toMatchObject({ $metadata: { httpStatusCode: 403, requestId: 'head-denied-id' } })
+    expect(error.message).toContain('403')
+    expect(error.message).toContain('head-denied-id')
+  })
+
   it('uses virtual host for deletion, multipart create, completion and abort', async () => {
     const requests: { host: string; path: string; method: string }[] = []
     vi.stubGlobal(

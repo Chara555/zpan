@@ -12,6 +12,16 @@ describe('allowlisted storage diagnostics', () => {
     expect(storageFailureDetails(error)).toEqual({ httpStatus: 403, code: 'AccessDenied', requestId: 'id-1' })
     expect(storageFailureSummary(storageFailureDetails(error))).toBe('HTTP 403 · AccessDenied · RequestId id-1')
   })
+  it('keeps OSS RequestId from a bodyless SDK HEAD error without retaining other headers', () => {
+    const details = storageFailureDetails({
+      name: 'Forbidden',
+      $metadata: { httpStatusCode: 403 },
+      $response: { statusCode: 403, headers: { 'x-oss-request-id': 'head-request-id', authorization: 'SECRET' } },
+    })
+    expect(details).toEqual({ httpStatus: 403, code: 'Forbidden', requestId: 'head-request-id' })
+    expect(JSON.stringify(details)).not.toContain('SECRET')
+  })
+
   it('extracts OSS XML identifiers and prefers response headers', () => {
     expect(
       storageResponseDetails(

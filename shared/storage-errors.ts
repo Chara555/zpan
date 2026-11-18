@@ -13,14 +13,20 @@ export function storageFailureDetails(error: unknown): StorageFailureDetails {
     Code?: unknown
     code?: unknown
     $metadata?: { httpStatusCode?: unknown; requestId?: unknown }
+    $response?: { statusCode?: unknown; headers?: Record<string, unknown> }
   }
-  const status = data.$metadata?.httpStatusCode
+  const status = data.$metadata?.httpStatusCode ?? data.$response?.statusCode
   return {
     ...(typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599
       ? { httpStatus: status }
       : {}),
     code: identifier(data.Code ?? data.code ?? data.name, 128),
-    requestId: identifier(data.$metadata?.requestId, 256),
+    requestId: identifier(
+      data.$metadata?.requestId ??
+        data.$response?.headers?.['x-oss-request-id'] ??
+        data.$response?.headers?.['x-amz-request-id'],
+      256,
+    ),
   }
 }
 export function storageResponseDetails(status: number, headers: Headers, body = ''): StorageFailureDetails {

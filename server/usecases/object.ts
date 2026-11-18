@@ -20,7 +20,7 @@ import type {
   PresignObjectUploadPartsInput,
   TransferMatterInput,
 } from '@shared/schemas'
-import { type StorageFailureDetails, storageFailureDetails } from '@shared/storage-errors'
+import { type StorageFailureDetails, storageFailureDetails, storageFailureSummary } from '@shared/storage-errors'
 import type { ObjectUploadInstructions } from '@shared/types'
 import { buildObjectKey, fileExt } from '../lib/path-template'
 import { resolveActorProfiles } from './audit-actors'
@@ -608,10 +608,16 @@ export async function completeUpload(
   try {
     head = await deps.s3.headObject(storage, record.storageKey)
   } catch (error) {
+    const details = storageFailureDetails(error)
+    const missing =
+      details.httpStatus === 404 ||
+      (details.httpStatus === undefined && ['NotFound', 'NoSuchKey'].includes(details.code ?? ''))
+    // A successful PUT does not imply that the credentials allow HEAD/GetObject.
+    // Preserve the provider's safe diagnostics; never label a 403 or network failure as a missing object.
     throw new ObjectUploadSessionError(
-      'invalid_state',
-      `Uploaded object not found: ${(error as Error).message}`,
-      'object_not_found',
+      missing ? 'invalid_state' : 'storage_failure',
+      `Uploaded object ${missing ? 'not found' : 'verification failed'}: ${storageFailureSummary(details) || 'Storage request failed'}`,
+      missing ? 'object_not_found' : 'object_verification_failed',
     )
   }
   if (record.uploadId == null) {

@@ -90,7 +90,13 @@ export function mapDomainError(error: unknown): DomainErrorMapping | null {
     if (error.code === 'not_found') {
       return mapping(404, 'Not found', { reason: error.reason.toUpperCase() })
     }
-    return mapping(409, 'Invalid upload session state', { reason: error.reason.toUpperCase() })
+    const safeMessages: Record<string, string> = {
+      object_not_found: 'Uploaded object was not found in storage',
+      etag_mismatch: 'Uploaded object ETag does not match the storage response',
+    }
+    return mapping(409, safeMessages[error.reason] ?? 'Invalid upload session state', {
+      reason: error.reason.toUpperCase(),
+    })
   }
   if (error instanceof WebDavPathError) {
     return mapping(error.status as ContentfulStatusCode, error.message)

@@ -94,6 +94,24 @@ describe('mapDomainError', () => {
     expect(reasonOf(invalid)).toBe('INVALID_STATE')
   })
 
+  it('shows safe upload verification details while retaining real missing-object semantics', () => {
+    const missing = mapDomainError(
+      new ObjectUploadSessionError('invalid_state', 'Object missing: HTTP 404', 'object_not_found'),
+    )
+    expect(missing?.json.error.message).toBe('Uploaded object was not found in storage')
+    expect(reasonOf(missing)).toBe('OBJECT_NOT_FOUND')
+    const denied = mapDomainError(
+      new ObjectUploadSessionError(
+        'storage_failure',
+        'Uploaded object verification failed: HTTP 403 · AccessDenied · RequestId head-id',
+        'object_verification_failed',
+      ),
+    )
+    expect(denied?.status).toBe(502)
+    expect(denied?.json.error.message).toContain('HTTP 403')
+    expect(reasonOf(denied)).toBe('OBJECT_VERIFICATION_FAILED')
+  })
+
   it('maps WebDavPathError to its own status with the canonical default reason', () => {
     const m = mapDomainError(new WebDavPathError('Bad path', 409))
     expect(m?.status).toBe(409)
