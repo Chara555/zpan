@@ -16,6 +16,33 @@ afterEach(() => {
 })
 
 describe('OSS in Workers using the real S3 SDK', () => {
+  it('bypasses the edge cache so a signed HEAD is never converted into GET', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const request = new Request(input, init)
+      // Model the documented cache-miss behavior for a cacheable image: an
+      // eligible HEAD becomes GET upstream, invalidating the method-bound SigV4.
+      if (request.method === 'HEAD' && init?.cache !== 'no-store') {
+        return new Response(null, {
+          status: 403,
+          headers: { 'x-oss-ec': '0002-00000429', 'x-oss-request-id': 'method-mismatch' },
+        })
+      }
+      expect(init?.cache).toBe('no-store')
+      expect(new URL(request.url).searchParams.has('X-Amz-Signature')).toBe(true)
+      return new Response(request.method === 'HEAD' ? null : new Uint8Array([7]), {
+        headers: { 'content-length': '1', etag: '"fresh-etag"' },
+      })
+    })
+    vi.stubGlobal('fetch', mock)
+    await expect(service.headObject(storage, 'folder/photo.jpg')).resolves.toMatchObject({
+      size: 1,
+      etag: 'fresh-etag',
+    })
+    expect(await service.getObjectBytes(storage, 'folder/photo.jpg')).toEqual(new Uint8Array([7]))
+    expect(mock).toHaveBeenCalledTimes(2)
+  })
+
   it('presigns PUT, GET and multipart parts with the same virtual host', async () => {
     const urls = await Promise.all([
       service.presignUpload(storage, 'folder/test.txt', 'text/plain'),
