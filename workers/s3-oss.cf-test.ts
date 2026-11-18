@@ -93,6 +93,97 @@ describe('OSS in Workers using the real S3 SDK', () => {
     expect(error.message).toContain('head-denied-id')
   })
 
+  it('extracts the OSS denial code and EC from HEAD headers without making a read probe', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const mock = vi.fn(
+      async () =>
+        new Response(null, {
+          status: 403,
+          headers: {
+            'x-oss-request-id': 'head-ec-id',
+            'x-oss-ec': '0003-00000501',
+            'x-oss-err': btoa(
+              '<Error><Code>AccessDenied</Code><Message>SECRET</Message><EC>0003-00000501</EC></Error>',
+            ),
+          },
+        }),
+    )
+    vi.stubGlobal('fetch', mock)
+    const error = await service.headObject(storage, 'folder/test.txt').catch((error) => error)
+    expect(error.name).toBe('AccessDenied')
+    expect(error.message).toContain('0003-00000501')
+    expect(error.message).not.toContain('SECRET')
+    expect(mock).toHaveBeenCalledOnce()
+  })
+
+  it('uses a bounded read only to diagnose an opaque HEAD denial and never activates on GET success', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const cancelled = vi.fn()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init)
+        if (request.method === 'HEAD')
+          return new Response(null, { status: 403, headers: { 'x-oss-request-id': 'head-id' } })
+        expect(request.method).toBe('GET')
+        expect(request.headers.get('range')).toBe('bytes=0-0')
+        return new Response(new ReadableStream({ cancel: cancelled }), { status: 206 })
+      }),
+    )
+    await expect(service.headObject(storage, 'folder/test.txt')).rejects.toMatchObject({
+      name: 'HeadDeniedReadAllowed',
+      $metadata: { httpStatusCode: 403, requestId: 'head-id' },
+    })
+    expect(cancelled).toHaveBeenCalledOnce()
+  })
+
+  it('retains HEAD and cancellation failures separately if a diagnostic response cannot be closed', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init)
+        return request.method === 'HEAD'
+          ? new Response(null, { status: 403 })
+          : new Response(
+              new ReadableStream({
+                cancel() {
+                  throw new Error('cancel failed')
+                },
+              }),
+              { status: 206 },
+            )
+      }),
+    )
+    const error = await service.headObject(storage, 'folder/test.txt').catch((error) => error)
+    expect(error.name).toBe('ReadProbeCleanupFailed')
+    expect(error.$metadata.httpStatusCode).toBe(403)
+    expect(error.cause).toBeInstanceOf(AggregateError)
+    expect(error.cause.errors).toHaveLength(2)
+  })
+
+  it('exposes the structured GET denial when HEAD has no provider error information', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const request = new Request(input, init)
+        return request.method === 'HEAD'
+          ? new Response(null, { status: 403 })
+          : new Response('<Error><Code>AccessDenied</Code><EC>0003-00000201</EC><Message>SECRET</Message></Error>', {
+              status: 403,
+              headers: { 'x-oss-request-id': 'read-id' },
+            })
+      }),
+    )
+    const error = await service.headObject(storage, 'folder/test.txt').catch((error) => error)
+    expect(error.name).toBe('AccessDenied')
+    expect(error.message).toContain('0003-00000201')
+    expect(error.message).toContain('read-id')
+    expect(error.message).not.toContain('SECRET')
+    expect(error.cause).toBeInstanceOf(AggregateError)
+  })
+
   it('uses virtual host for deletion, multipart create, completion and abort', async () => {
     const requests: { host: string; path: string; method: string }[] = []
     vi.stubGlobal(

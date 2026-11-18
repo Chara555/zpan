@@ -218,7 +218,43 @@ export class S3Service implements S3Gateway {
     const url = await getSignedUrl(client, new HeadObjectCommand({ Bucket: storage.bucket, Key: key }), {
       expiresIn: DEFAULT_EXPIRES_IN,
     })
-    const response = await this.fetchStorage(url, { method: 'HEAD' }, 'object verification')
+    let response: Response
+    try {
+      response = await this.fetchStorage(url, { method: 'HEAD' }, 'object verification')
+    } catch (headError) {
+      const details = storageFailureDetails(headError)
+      if (
+        details.httpStatus !== 403 ||
+        details.providerCode ||
+        !['Unknown', 'StorageRequestError'].includes(details.code ?? '')
+      )
+        throw headError
+      // Only when HEAD has no usable provider diagnostics, ask for one byte with
+      // the same credentials/key. This is diagnosis, never a successful fallback.
+      let body: BodyInit
+      try {
+        body = await this.getObjectBody(storage, key, 'bytes=0-0')
+      } catch (readError) {
+        const readDetails = storageFailureDetails(readError)
+        throw storageRequestError(
+          'object verification read probe',
+          readDetails.httpStatus ? readDetails : details,
+          new AggregateError([headError, readError], 'HEAD and diagnostic read failed'),
+        )
+      }
+      if (body instanceof ReadableStream) {
+        try {
+          await body.cancel()
+        } catch (cleanupError) {
+          throw storageRequestError(
+            'object verification read probe cleanup',
+            { ...details, code: 'ReadProbeCleanupFailed' },
+            new AggregateError([headError, cleanupError], 'HEAD and diagnostic read cleanup failed'),
+          )
+        }
+      }
+      throw storageRequestError('object verification', { ...details, code: 'HeadDeniedReadAllowed' }, headError)
+    }
     const length = response.headers.get('content-length')
     const etag = (response.headers.get('etag') ?? '').trim().replace(/"/g, '')
     if (length === null || !/^\d+$/.test(length) || !Number.isSafeInteger(Number(length)) || !etag) {

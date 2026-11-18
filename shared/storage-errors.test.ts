@@ -38,6 +38,36 @@ describe('allowlisted storage diagnostics', () => {
       ),
     ).toEqual({ httpStatus: 400, code: 'InvalidPart', requestId: 'xml-id' })
   })
+  it('decodes only allowlisted identifiers from bodyless OSS HEAD errors', () => {
+    const encoded = btoa(
+      '<Error><Code>AccessDenied</Code><EC>0003-00000501</EC><Message>SECRET signed URL</Message><StringToSign>SECRET</StringToSign></Error>',
+    )
+    const details = storageResponseDetails(
+      403,
+      new Headers({ 'x-oss-err': encoded, 'x-oss-ec': '0003-00000501', 'x-oss-request-id': 'head-id' }),
+    )
+    expect(details).toEqual({
+      httpStatus: 403,
+      code: 'AccessDenied',
+      requestId: 'head-id',
+      providerCode: '0003-00000501',
+    })
+    expect(storageFailureSummary(details)).toContain('OSS EC 0003-00000501')
+    expect(JSON.stringify(details)).not.toContain('SECRET')
+    const wrapped = Object.assign(new Error('safe'), {
+      name: 'AccessDenied',
+      storageDiagnostics: details,
+      $metadata: { httpStatusCode: 403, requestId: 'head-id' },
+    })
+    expect(storageFailureDetails(wrapped)).toEqual(details)
+  })
+
+  it('keeps status and request id when optional OSS error headers are malformed', () => {
+    expect(
+      storageResponseDetails(403, new Headers({ 'x-oss-err': 'not-base64!!!', 'x-oss-request-id': 'head-id' })),
+    ).toEqual({ httpStatus: 403, code: undefined, requestId: 'head-id' })
+  })
+
   it('rejects URL, CRLF and unbounded values in identifier fields', () => {
     expect(
       storageFailureDetails({

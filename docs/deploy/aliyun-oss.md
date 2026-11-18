@@ -91,3 +91,10 @@ HEAD verification uses the SDK's presigned query authentication and Workers
 same key with the same credentials, endpoint, region and addressing setting.
 It requires a valid Content-Length and ETag before confirmation. A 403 continues
 to fail; no GET-only fallback activates an object and no bucket policy is changed.
+
+When HEAD is bodyless, diagnostics decode the bounded OSS `x-oss-err` header and
+extract only Code, EC (`x-oss-ec`), and RequestId. No Message, signing material or
+raw error header is logged. If a 403 has no usable provider diagnostics, a single
+GET with `Range: bytes=0-0` obtains a structured error; a successful response is
+cancelled without reading the object. HEAD denial still rejects confirmation,
+even if GET succeeds. HEAD and probe/cleanup errors are retained separately.
