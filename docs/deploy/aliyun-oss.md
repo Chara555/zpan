@@ -1,0 +1,68 @@
+# Alibaba Cloud OSS on Workers
+
+Use the regional **S3** endpoint, for example
+`https://s3.oss-cn-beijing.aliyuncs.com`, region `cn-beijing`, and disable
+**Path-style addressing**. Save the form before testing. The bucket must not be
+included in the Endpoint field. For bucket `example`, SDK signing uses
+`https://example.s3.oss-cn-beijing.aliyuncs.com/<key>`.
+
+The checkbox is persisted through create/replace/patch and read back into the
+same `S3Client` configuration used by PUT, GET, HEAD, DELETE, and multipart
+operations. It is not hardcoded true in the client. Changing Endpoint alone
+previously retained the old true value. Entering a recognized OSS S3 endpoint
+now defaults the form to virtual-hosted addressing. Existing stored settings
+remain explicit: turn off Path-style addressing and save existing OSS entries.
+Never rewrite a signed URL afterwards; host and path participate in its signature.
+
+## Workers XML compatibility
+
+Workers has no `DOMParser`. The SDK's browser condition selects
+`@aws-sdk/xml-builder/dist-es/xml-parser.browser.js`; error responses on even
+single-object operations can use this parser. A successful PUT/DELETE is not
+proof that error deserialization works.
+
+`wrangler.toml` and the Vite root resolver explicitly select the XML package's
+non-browser CommonJS entry. The package is a direct, pinned dependency using the
+version already in the lockfile. Workers tests use the same entry and prebundle
+it to handle the test runner's CJS/ESM loader. Production deployment checks reject
+an artifact containing the browser XML parser.
+
+## Failure diagnostics
+
+Server-side SDK/fetch failures log `storage.request.failed` with operation,
+HTTP status, storage error code, and RequestId only. They reject the operation.
+Raw XML, Message, CanonicalRequest, StringToSign, request headers, credentials,
+and signed URLs are never logged. SDK causes remain available in memory, but
+the generic error formatter stops at the safe storage-error boundary.
+
+The browser test keeps upload and strict cleanup failures separately. Readable
+upload failures extract only status/code/RequestId and report them through the
+existing authorized abort-upload request. The server logs these as
+`storage.upload.failed` with `source: browser` **before** attempting cleanup.
+These are untrusted client diagnostics, not proof of the storage response.
+If CORS blocks access, only `BrowserNetworkError` is available; no HTTP status or
+storage code is invented. Exposing `ETag` and `x-oss-request-id` in bucket CORS
+makes browser multipart handling and diagnosis possible.
+
+A cleanup failure cannot mark a connection healthy. Streamed multipart failures
+retain both the upload error and any abort error in an `AggregateError`. Missing
+part ETags, missing completion ETags, and embedded HTTP-200 storage errors fail.
+
+## Verification
+
+Run the S3 unit tests, storage persistence/HTTP tests, and
+`pnpm exec vitest run --project cloudflare-contract workers/s3-oss.cf-test.ts`.
+The Workers contract uses the real SDK with disposable fake credentials and an
+OSS-shaped fake transport. It verifies virtual-hosted PUT/GET/DELETE, multipart
+create/part/complete/abort, XML AccessDenied parsing without DOMParser, and failure
+metadata. It does not contact a real bucket or replace production credentials.
+
+For a real bucket, use the administrator's connection test for browser PUT and
+strict DELETE cleanup, then upload/download a disposable object. Ordinary ZPan
+uploads enter multipart only above 5 GiB; local Workers tests exercise smaller
+multipart data through the existing streamed-upload gateway without changing
+that product threshold.
+
+References:
+- https://developers.cloudflare.com/r2/examples/aws/aws-sdk-js-v3/
+- https://www.alibabacloud.com/help/en/oss/developer-reference/use-aws-sdks-to-access-oss

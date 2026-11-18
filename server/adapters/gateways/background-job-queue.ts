@@ -1,3 +1,4 @@
+import { formatError } from '../../lib/errors'
 import type { Platform } from '../../platform/interface'
 import type { BackgroundJobMessage, BackgroundJobQueue } from '../../usecases/ports'
 
@@ -35,7 +36,7 @@ class LocalJobQueue {
         try {
           await this.run(next)
         } catch (error) {
-          console.error('[background-jobs] local worker failed:', error)
+          console.error('[background-jobs] local worker failed:', formatError(error))
         }
       }
     } finally {

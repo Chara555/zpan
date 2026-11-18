@@ -45,6 +45,9 @@ importers:
       '@aws-sdk/s3-request-presigner':
         specifier: ^3.1022.0
         version: 3.1028.0
+      '@aws-sdk/xml-builder':
+        specifier: 3.972.26
+        version: 3.972.26
       '@azure/functions':
         specifier: ^4.12.0
         version: 4.12.0

@@ -2,6 +2,7 @@
 
 import { createQuotaRepo } from '../server/adapters/repos/quota'
 import { createDeps } from '../server/composition'
+import { formatError } from '../server/lib/errors'
 import { createCloudflarePlatform } from '../server/platform/cloudflare'
 import { backgroundJobsEnabled } from '../server/platform/interface'
 import { syncPendingRemoteDownloadUsageReports } from '../server/usecases/downloads/remote-download-usage'
@@ -93,7 +94,7 @@ export async function handleScheduled(event: ScheduledTrigger, env: ScheduledEnv
       try {
         await runScheduledTask(env.DB, name, slot, run)
       } catch (error) {
-        console.error('scheduled.task.failed', { name, slot, error })
+        console.error('scheduled.task.failed', { name, slot, error: formatError(error) })
         throw error
       }
     }),

@@ -80,6 +80,11 @@ export default defineConfig(({ command, mode }) => ({
   ],
   resolve: {
     alias: {
+      // The SDK's browser XML parser needs DOMParser, which Workers does not provide.
+      '@aws-sdk/xml-builder': path.resolve(
+        import.meta.dirname,
+        'node_modules/@aws-sdk/xml-builder/dist-cjs/index.js',
+      ),
       '@': path.resolve(import.meta.dirname, './src'),
       '@shared': path.resolve(import.meta.dirname, './shared'),
       '@server': path.resolve(import.meta.dirname, './server'),

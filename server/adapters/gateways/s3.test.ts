@@ -1,6 +1,6 @@
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import type { Storage } from '@shared/types'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { S3StorageCredentials } from '../../usecases/ports'
 import { S3Service } from './s3.js'
 
@@ -12,6 +12,7 @@ vi.mock('@aws-sdk/client-s3', () => {
     constructor(config: unknown) {
       this.config = config
     }
+    middlewareStack = { add: vi.fn() }
     send = mockSend
   }
   class MockPutObjectCommand {
@@ -316,7 +317,11 @@ describe('S3Service', () => {
 
     it('completes multipart uploads through a presigned POST XML body', async () => {
       const { getSignedUrl } = await import('@aws-sdk/s3-request-presigner')
-      const fetchMock = vi.fn().mockResolvedValueOnce(new Response('<CompleteMultipartUploadResult />'))
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(
+          new Response('<CompleteMultipartUploadResult><ETag>etag</ETag></CompleteMultipartUploadResult>'),
+        )
       vi.stubGlobal('fetch', fetchMock)
 
       await expect(
@@ -339,6 +344,16 @@ describe('S3Service', () => {
         expect.anything(),
       )
       expect(mockSend).not.toHaveBeenCalled()
+    })
+
+    it('rejects an empty multipart completion response', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => new Response('')),
+      )
+      await expect(
+        service.completeMultipartUpload(storage, 'video.mp4', 'upload-1', [{ partNumber: 1, etag: 'etag' }]),
+      ).rejects.toThrow('missing ETag')
     })
 
     it('rejects embedded S3 complete errors returned with HTTP 200', async () => {
@@ -579,7 +594,9 @@ describe('S3Service', () => {
         .mockResolvedValueOnce(
           new Response('<CreateMultipartUploadResult><UploadId>upload-1</UploadId></CreateMultipartUploadResult>'),
         )
-        .mockResolvedValueOnce(new Response('<CompleteMultipartUploadResult />'))
+        .mockResolvedValueOnce(
+          new Response('<CompleteMultipartUploadResult><ETag>etag</ETag></CompleteMultipartUploadResult>'),
+        )
       vi.stubGlobal('fetch', fetchMock)
       const body = bytesStream(new Uint8Array([1, 2, 3]))
 
@@ -671,3 +688,53 @@ function bytesStream(...chunks: Uint8Array[]): ReadableStream<Uint8Array> {
     },
   })
 }
+
+describe('S3 failure diagnostics', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+  it('never includes the raw OSS XML body in multipart failure messages or logs', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            '<Error><Code>SignatureDoesNotMatch</Code><RequestId>oss-id</RequestId><Message>https://oss.test/?X-Amz-Signature=SECRET</Message><AccessKeyId>AKID</AccessKeyId></Error>',
+            { status: 403, headers: { 'x-oss-request-id': 'oss-id' } },
+          ),
+      ),
+    )
+    const error = await new S3Service().createMultipartUpload(makeStorage(), 'test').catch((e) => e)
+    expect(error.message).toContain('403')
+    expect(error.message).toContain('SignatureDoesNotMatch')
+    expect(error.message).not.toContain('SECRET')
+    expect(error.message).not.toContain('AKID')
+    expect(log).toHaveBeenCalledWith(
+      'storage.request.failed',
+      expect.objectContaining({
+        httpStatus: 403,
+        code: 'SignatureDoesNotMatch',
+        requestId: 'oss-id',
+      }),
+    )
+    expect(JSON.stringify(log.mock.calls)).not.toMatch(/SECRET|AKID|X-Amz|Authorization/)
+  })
+  it('retains a failed part and a failed abort separately', async () => {
+    const service = new S3Service()
+    vi.spyOn(service, 'createMultipartUpload').mockResolvedValue('upload-id')
+    const original = new Error('part failed')
+    mockSend.mockRejectedValueOnce(original)
+    vi.spyOn(service, 'abortMultipartUpload').mockRejectedValue(new Error('abort failed'))
+    const stream = new ReadableStream({
+      start(c) {
+        c.enqueue(new Uint8Array([1]))
+        c.close()
+      },
+    })
+    const error = await service.putObject(makeStorage(), 'test', stream, 'text/plain').catch((e) => e)
+    expect(error).toBeInstanceOf(AggregateError)
+    expect(error.errors).toEqual([original, expect.objectContaining({ message: 'abort failed' })])
+  })
+})

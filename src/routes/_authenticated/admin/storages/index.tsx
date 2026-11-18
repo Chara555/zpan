@@ -1,4 +1,5 @@
 import { FREE_STORAGE_LIMIT, StorageStatus, StorageStatusReason } from '@shared/constants'
+import { type StorageFailureDetails, storageFailureSummary, storageResponseDetails } from '@shared/storage-errors'
 import type { Storage } from '@shared/types'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { createFileRoute } from '@tanstack/react-router'
@@ -238,6 +239,7 @@ export function StoragesPage() {
     let result: StorageHealth | null = null
     let currentStep: StorageTestStep = 'creating'
     let failedStep: StorageTestStep | null = null
+    let uploadFailure: StorageFailureDetails | undefined
     const setCurrentStep = (step: StorageTestStep) => {
       currentStep = step
       setTestStep(step)
@@ -267,6 +269,7 @@ export function StoragesPage() {
           body: blob,
         })
       } catch {
+        uploadFailure = { code: 'BrowserNetworkError' }
         result = {
           status: 'cors',
           message: t('admin.storages.testCorsFailure'),
@@ -278,7 +281,8 @@ export function StoragesPage() {
 
       if (!uploadResponse.ok) {
         const body = await uploadResponse.text().catch(() => '')
-        const detail = body.trim() || uploadResponse.statusText || `HTTP ${uploadResponse.status}`
+        uploadFailure = storageResponseDetails(uploadResponse.status, uploadResponse.headers, body)
+        const detail = storageFailureSummary(uploadFailure)
         throw new Error(t('admin.storages.testUploadFailed', { detail }))
       }
 
@@ -290,7 +294,10 @@ export function StoragesPage() {
       if (draft?.upload) {
         if (result?.status === 'success') setCurrentStep('cleanup')
         try {
-          await abortObjectUpload(draft.id, draft.upload.sessionId, { strictStorageCleanup: true })
+          await abortObjectUpload(draft.id, draft.upload.sessionId, {
+            strictStorageCleanup: true,
+            ...(uploadFailure ? { uploadFailure } : {}),
+          })
         } catch (cleanupError) {
           const cleanupMessage = t('admin.storages.testCleanupFailed', { detail: readableError(cleanupError) })
           if (result?.status === 'success') failedStep = 'cleanup'

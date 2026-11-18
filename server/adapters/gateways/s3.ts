@@ -12,7 +12,9 @@ import {
 } from '@aws-sdk/client-s3'
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner'
 import { attachmentContentDisposition } from '@shared/content-disposition'
+import { storageFailureDetails, storageResponseDetails } from '../../../shared/storage-errors'
 import type { S3Gateway, S3StorageCredentials } from '../../usecases/ports'
+import { storageRequestError } from './storage-errors'
 
 const DEFAULT_EXPIRES_IN = 3600
 const MULTIPART_PART_SIZE = 5 * 1024 * 1024
@@ -20,7 +22,7 @@ const SMALL_STREAM_PUT_BUFFER_SIZE = 256 * 1024
 
 export class S3Service implements S3Gateway {
   createClient(storage: S3StorageCredentials): S3Client {
-    return new S3Client({
+    const client = new S3Client({
       region: storage.region,
       endpoint: storage.endpoint,
       requestChecksumCalculation: 'WHEN_REQUIRED',
@@ -30,6 +32,31 @@ export class S3Service implements S3Gateway {
       },
       forcePathStyle: storage.forcePathStyle ?? true,
     })
+    client.middlewareStack.add(
+      (next, context) => async (args) => {
+        try {
+          return await next(args)
+        } catch (cause) {
+          throw storageRequestError(context.commandName ?? 'request', storageFailureDetails(cause), cause)
+        }
+      },
+      { step: 'initialize', name: 'safeStorageDiagnostics' },
+    )
+    return client
+  }
+
+  private async fetchStorage(url: string, init: RequestInit | undefined, operation: string): Promise<Response> {
+    let response: Response
+    try {
+      response = await fetch(url, init)
+    } catch (cause) {
+      throw storageRequestError(operation, storageFailureDetails(cause), cause)
+    }
+    if (!response.ok) {
+      const body = await response.text()
+      throw storageRequestError(operation, storageResponseDetails(response.status, response.headers, body))
+    }
+    return response
   }
 
   async presignUpload(
@@ -71,12 +98,15 @@ export class S3Service implements S3Gateway {
       }),
       { expiresIn: DEFAULT_EXPIRES_IN },
     )
-    const response = await fetch(url, {
-      method: 'POST',
-      ...(contentType ? { headers: { 'Content-Type': contentType } } : {}),
-    })
+    const response = await this.fetchStorage(
+      url,
+      {
+        method: 'POST',
+        ...(contentType ? { headers: { 'Content-Type': contentType } } : {}),
+      },
+      'multipart upload create',
+    )
     const body = await response.text()
-    if (!response.ok) throw new Error(`S3 multipart upload create failed: ${response.status}: ${body.trim()}`)
     const uploadId = xmlTag(body, 'UploadId')
     if (!uploadId) throw new Error('S3 multipart upload did not return an upload id')
     return uploadId
@@ -116,18 +146,23 @@ export class S3Service implements S3Gateway {
       }),
       { expiresIn: DEFAULT_EXPIRES_IN },
     )
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/xml' },
-      body: multipartCompleteXml(sortedParts),
-    })
+    const response = await this.fetchStorage(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/xml' },
+        body: multipartCompleteXml(sortedParts),
+      },
+      'multipart upload complete',
+    )
     const body = await response.text()
-    if (!response.ok) {
-      throw new Error(`S3 multipart upload complete failed: ${response.status}: ${body.trim()}`)
-    }
     if (xmlTag(body, 'Error') !== null || xmlTag(body, 'Code') !== null) {
-      throw new Error(`S3 multipart upload complete failed: ${response.status}: ${body.trim()}`)
+      throw storageRequestError(
+        'multipart upload complete',
+        storageResponseDetails(response.status, response.headers, body),
+      )
     }
+    if (!xmlTag(body, 'ETag')) throw new Error('S3 multipart upload complete failed: missing ETag')
   }
 
   async abortMultipartUpload(storage: S3StorageCredentials, key: string, uploadId: string): Promise<void> {
@@ -137,11 +172,7 @@ export class S3Service implements S3Gateway {
       new AbortMultipartUploadCommand({ Bucket: storage.bucket, Key: key, UploadId: uploadId }),
       { expiresIn: DEFAULT_EXPIRES_IN },
     )
-    const response = await fetch(url, { method: 'DELETE' })
-    if (!response.ok) {
-      const body = await response.text()
-      throw new Error(`S3 multipart upload abort failed: ${response.status}: ${body.trim()}`)
-    }
+    await this.fetchStorage(url, { method: 'DELETE' }, 'multipart upload abort')
   }
 
   async presignDownload(
@@ -199,8 +230,7 @@ export class S3Service implements S3Gateway {
     const url = await getSignedUrl(client, new GetObjectCommand({ Bucket: storage.bucket, Key: key }), {
       expiresIn: DEFAULT_EXPIRES_IN,
     })
-    const response = await fetch(url, range ? { headers: { Range: range } } : undefined)
-    if (!response.ok) throw new Error(`S3 object read failed: ${response.status}`)
+    const response = await this.fetchStorage(url, range ? { headers: { Range: range } } : undefined, 'object read')
     if (!response.body) return response.arrayBuffer()
     return response.body
   }
@@ -234,13 +264,17 @@ export class S3Service implements S3Gateway {
         unhoistableHeaders: new Set(['x-amz-copy-source']),
       },
     )
-    const response = await fetch(url, {
-      method: 'PUT',
-      headers: { 'x-amz-copy-source': copySource },
-    })
+    const response = await this.fetchStorage(
+      url,
+      {
+        method: 'PUT',
+        headers: { 'x-amz-copy-source': copySource },
+      },
+      'object copy',
+    )
     const body = await response.text()
     if (!response.ok || xmlTag(body, 'Error') !== null || xmlTag(body, 'Code') !== null) {
-      throw new Error(`S3 object copy failed: ${response.status}: ${body.trim()}`)
+      throw storageRequestError('object copy', storageResponseDetails(response.status, response.headers, body))
     }
     if (xmlTag(body, 'ETag') === null) {
       throw new Error(`S3 object copy failed: ${response.status}: missing ETag`)
@@ -309,15 +343,18 @@ export class S3Service implements S3Gateway {
     contentLength: number,
   ): Promise<void> {
     const url = await this.presignUpload(storage, key, contentType)
-    const response = await fetch(url, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': contentType,
-        'Content-Length': String(contentLength),
+    await this.fetchStorage(
+      url,
+      {
+        method: 'PUT',
+        headers: {
+          'Content-Type': contentType,
+          'Content-Length': String(contentLength),
+        },
+        body,
       },
-      body,
-    })
-    if (!response.ok) throw new Error(`S3 stream upload failed: ${response.status}`)
+      'stream upload',
+    )
   }
 
   private async putObjectMultipartStream(
@@ -374,7 +411,11 @@ export class S3Service implements S3Gateway {
       )
       return total
     } catch (e) {
-      await this.abortMultipartUpload(storage, key, uploadId)
+      try {
+        await this.abortMultipartUpload(storage, key, uploadId)
+      } catch (cleanupError) {
+        throw new AggregateError([e, cleanupError], 'S3 multipart upload failed; cleanup also failed', { cause: e })
+      }
       throw e
     }
   }
@@ -397,7 +438,8 @@ export class S3Service implements S3Gateway {
         ContentLength: body.byteLength,
       }),
     )
-    return { ETag: result.ETag ?? `"part-${partNumber}"`, PartNumber: partNumber }
+    if (!result.ETag) throw new Error('S3 part upload did not return an ETag')
+    return { ETag: result.ETag, PartNumber: partNumber }
   }
 
   async deleteObject(storage: S3StorageCredentials, key: string): Promise<void> {
@@ -407,8 +449,7 @@ export class S3Service implements S3Gateway {
 
   async deleteObjects(storage: S3StorageCredentials, keys: string[]): Promise<void> {
     if (keys.length === 0) return
-    // DeleteObjectsCommand returns XML which requires DOMParser to parse.
-    // Cloudflare Workers doesn't have DOMParser, so we delete one-by-one.
+    // Keep individual failures visible; Workers uses the non-DOM XML SDK build.
     await Promise.all(keys.map((key) => this.deleteObject(storage, key)))
   }
 }

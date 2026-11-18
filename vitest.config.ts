@@ -1,7 +1,14 @@
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import { cloudflareTest, readD1Migrations } from '@cloudflare/vitest-pool-workers'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vitest/config'
+
+const require = createRequire(import.meta.url)
+const workerXmlAliases = {
+  '@aws-sdk/xml-builder': require.resolve('@aws-sdk/xml-builder'),
+  'fast-xml-parser': require.resolve('fast-xml-parser', { paths: [path.dirname(require.resolve('@aws-sdk/xml-builder'))] }),
+}
 
 const aliases = {
   '@': path.resolve(import.meta.dirname, './src'),
@@ -140,9 +147,10 @@ export default defineConfig({
       },
       {
         plugins: [createCloudflarePlugin()],
-        resolve: { alias: aliases },
+        resolve: { alias: { ...aliases, ...workerXmlAliases } },
         test: {
           name: 'cloudflare-contract',
+          deps: { optimizer: { ssr: { enabled: true, include: ['@aws-sdk/xml-builder'] } } },
           globals: true,
           // These D1-focused contracts use unique fixture identifiers and scoped
           // assertions, so sharing one migrated database avoids replaying the
@@ -158,9 +166,10 @@ export default defineConfig({
       },
       {
         plugins: [createCloudflarePlugin()],
-        resolve: { alias: aliases },
+        resolve: { alias: { ...aliases, ...workerXmlAliases } },
         test: {
           name: 'cloudflare-isolated',
+          deps: { optimizer: { ssr: { enabled: true, include: ['@aws-sdk/xml-builder'] } } },
           globals: true,
           sequence: { groupOrder: 2 },
           testTimeout: 15000,

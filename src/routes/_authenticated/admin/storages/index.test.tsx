@@ -19,6 +19,7 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, values?: Record<string, string>) => {
       if (!values) return key
+      if (values.detail) return `${key}: ${values.detail}`
       return Object.entries(values).reduce((message, [name, value]) => message.replace(`{{${name}}}`, value), key)
     },
   }),
@@ -315,7 +316,40 @@ describe('StoragesPage connection test action', () => {
     expect(document.body.textContent).toContain('"POST"')
     expect(document.body.textContent).toContain('"HEAD"')
     expect(document.body.textContent).toContain('"MaxAgeSeconds": 3600')
-    expect(abortObjectUpload).toHaveBeenCalledWith('object-1', 'session-1', { strictStorageCleanup: true })
+    expect(abortObjectUpload).toHaveBeenCalledWith('object-1', 'session-1', {
+      strictStorageCleanup: true,
+      uploadFailure: { code: 'BrowserNetworkError' },
+    })
+  })
+
+  it('retains upload and cleanup failures and never marks either as successful', async () => {
+    vi.mocked(listStorages).mockResolvedValue({ items: [storage], total: 1 })
+    vi.mocked(createObject).mockResolvedValue(uploadDraft)
+    vi.mocked(abortObjectUpload).mockRejectedValue(new Error('cleanup denied'))
+    vi.mocked(patchStorage).mockResolvedValue(storage)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            '<Error><Code>AccessDenied</Code><RequestId>oss-upload-id</RequestId><Message>https://oss.test/?X-Amz-Signature=DO_NOT_SHOW</Message></Error>',
+            { status: 403, headers: { 'x-oss-request-id': 'oss-upload-id' } },
+          ),
+      ),
+    )
+    const view = renderStoragesPage()
+    fireEvent.pointerDown(await view.findByRole('button', { name: 'admin.storages.cardActions' }), { button: 0 })
+    fireEvent.click(await view.findByRole('menuitem', { name: 'admin.storages.testAction' }))
+    await waitFor(() => expect(document.body.textContent).toContain('cleanup denied'))
+    expect(document.body.textContent).toContain('HTTP 403')
+    expect(document.body.textContent).toContain('AccessDenied')
+    expect(document.body.textContent).toContain('oss-upload-id')
+    expect(document.body.textContent).not.toContain('DO_NOT_SHOW')
+    expect(patchStorage).toHaveBeenCalledWith('storage-1', { status: 'unhealthy', statusReason: 'unknown' })
+    expect(abortObjectUpload).toHaveBeenCalledWith('object-1', 'session-1', {
+      strictStorageCleanup: true,
+      uploadFailure: { httpStatus: 403, code: 'AccessDenied', requestId: 'oss-upload-id' },
+    })
   })
 
   it('runs a health check after enabling a storage and keeps it enabled when the check fails', async () => {

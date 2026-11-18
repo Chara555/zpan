@@ -686,6 +686,20 @@ describe('api', () => {
       expect(init.method).toBe('DELETE')
     })
 
+    it('reports only structured browser diagnostics on the abort request', async () => {
+      vi.mocked(fetch).mockResolvedValueOnce(makeResponse(null, true, 204))
+      await abortObjectUpload('obj-1', 'sess-1', {
+        strictStorageCleanup: true,
+        uploadFailure: { httpStatus: 403, code: 'AccessDenied', requestId: 'oss-id' },
+      })
+      const [url] = vi.mocked(fetch).mock.calls[0] as [string, RequestInit]
+      const query = new URL(url, 'https://zpan.test').searchParams
+      expect(query.get('uploadHttpStatus')).toBe('403')
+      expect(query.get('uploadErrorCode')).toBe('AccessDenied')
+      expect(query.get('uploadRequestId')).toBe('oss-id')
+      expect(query.get('strictStorageCleanup')).toBe('1')
+    })
+
     it('throws ApiError on error response', async () => {
       vi.mocked(fetch).mockResolvedValueOnce(makeResponse({ error: 'not found' }, false, 404))
 

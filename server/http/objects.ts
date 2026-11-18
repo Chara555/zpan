@@ -174,6 +174,20 @@ const idParam = z.object({ id: opaqueIdSchema })
 const sessionParams = z.object({ id: opaqueIdSchema, uploadSessionId: opaqueIdSchema })
 const abortUploadQuerySchema = z.object({
   strictStorageCleanup: z.enum(['1', 'true']).optional(),
+  uploadHttpStatus: z
+    .string()
+    .regex(/^[1-5]\d{2}$/)
+    .optional(),
+  uploadErrorCode: z
+    .string()
+    .max(128)
+    .regex(/^[A-Za-z0-9_+/.=-]+$/)
+    .optional(),
+  uploadRequestId: z
+    .string()
+    .max(256)
+    .regex(/^[A-Za-z0-9_+/.=-]+$/)
+    .optional(),
 })
 
 // The caller acting on objects: a download-task-upload token acts on behalf of
@@ -608,6 +622,11 @@ const objects = app
       sessionId: uploadSessionId,
       actorId: actorId(c),
       strictStorageCleanup: c.req.valid('query').strictStorageCleanup !== undefined,
+      uploadFailure: {
+        httpStatus: c.req.valid('query').uploadHttpStatus ? Number(c.req.valid('query').uploadHttpStatus) : undefined,
+        code: c.req.valid('query').uploadErrorCode,
+        requestId: c.req.valid('query').uploadRequestId,
+      },
     })
     return c.body(null, 204)
   })

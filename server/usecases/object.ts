@@ -20,6 +20,7 @@ import type {
   PresignObjectUploadPartsInput,
   TransferMatterInput,
 } from '@shared/schemas'
+import { type StorageFailureDetails, storageFailureDetails } from '@shared/storage-errors'
 import type { ObjectUploadInstructions } from '@shared/types'
 import { buildObjectKey, fileExt } from '../lib/path-template'
 import { resolveActorProfiles } from './audit-actors'
@@ -641,7 +642,14 @@ export async function completeUpload(
 // cleanup if a previous abort marked the session first; rejects active completions.
 export async function abortUpload(
   deps: Pick<Deps, 'matter' | 'storages' | 's3' | 'objectUploadSessions'>,
-  params: { orgId: string; objectId: string; sessionId: string; actorId: string; strictStorageCleanup?: boolean },
+  params: {
+    orgId: string
+    objectId: string
+    sessionId: string
+    actorId: string
+    strictStorageCleanup?: boolean
+    uploadFailure?: StorageFailureDetails
+  },
 ): Promise<void> {
   const record = await deps.objectUploadSessions.get(params.orgId, params.objectId, params.sessionId)
   if (!record) throw new ObjectUploadSessionError('not_found')
@@ -654,6 +662,25 @@ export async function abortUpload(
   }
 
   const { matter: sessionMatter, storage } = await loadObjectForUploadSession(deps, params.orgId, params.objectId)
+  if (
+    params.uploadFailure &&
+    (params.uploadFailure.httpStatus || params.uploadFailure.code || params.uploadFailure.requestId)
+  ) {
+    // Browser reports are untrusted diagnostics, scoped to an authorized session.
+    // Log before cleanup so its failure cannot suppress the upload failure.
+    console.error('storage.upload.failed', {
+      source: 'browser',
+      storageId: storage.id,
+      sessionId: record.id,
+      ...storageFailureDetails({
+        Code: params.uploadFailure.code,
+        $metadata: {
+          httpStatusCode: params.uploadFailure.httpStatus,
+          requestId: params.uploadFailure.requestId,
+        },
+      }),
+    })
+  }
   if (record.status === 'completed') {
     if (sessionMatter.status !== 'draft' || record.uploadId == null) {
       throw new ObjectUploadSessionError('invalid_state', 'Upload already completed')

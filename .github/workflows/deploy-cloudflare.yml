@@ -71,6 +71,12 @@ jobs:
           pnpm exec vitest run --project backend-unit --project backend-integration-data server/scheduled-worker.test.ts server/scheduled-state.integration.test.ts
           pnpm typecheck
 
+      - name: Check storage compatibility
+        run: |
+          pnpm exec vitest run --project backend-unit shared/storage-errors.test.ts server/adapters/gateways/storage-errors.test.ts server/adapters/gateways/s3.test.ts
+          mkdir -p dist
+          pnpm exec vitest run --project cloudflare-contract workers/s3-oss.cf-test.ts
+
       - name: Ensure D1 database exists
         id: d1
         env:
@@ -233,13 +239,16 @@ jobs:
           ZPAN_APP_COMMIT: ${{ steps.source.outputs.commit }}
         run: pnpm build
 
-      - name: Verify deployment Cron
+      - name: Verify deployment compatibility
         run: |
           python3 - <<'PYTHON'
           import json
           from pathlib import Path
           config = json.loads(Path("dist/zpan/wrangler.json").read_text())
           assert config["triggers"]["crons"] == ["*/10 * * * *"], "Expected the single scheduler Cron"
+          for source in Path("dist/zpan").rglob("*.js"):
+              code = source.read_text()
+              assert "xml-parser.browser" not in code and "new DOMParser" not in code, f"Browser XML parser in {source}"
           PYTHON
 
       - name: Deploy

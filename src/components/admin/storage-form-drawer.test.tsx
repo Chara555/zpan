@@ -118,6 +118,28 @@ describe('StorageFormDrawer', () => {
     expect(onOpenChange).toHaveBeenCalledWith(false)
   })
 
+  it('saves the OSS S3 endpoint with virtual-hosted addressing and preserves it on edit', async () => {
+    vi.stubGlobal('ResizeObserver', TestResizeObserver)
+    vi.mocked(patchStorage).mockResolvedValue({ ...storage, forcePathStyle: false })
+    renderStorageFormDrawer({ storage })
+    fireEvent.change(screen.getByLabelText('admin.storages.fieldEndpoint'), {
+      target: { value: 'https://s3.oss-cn-beijing.aliyuncs.com' },
+    })
+    expect(
+      screen.getByRole('switch', { name: 'admin.storages.fieldForcePathStyle' }).getAttribute('aria-checked'),
+    ).toBe('false')
+    fireEvent.click(screen.getByRole('button', { name: 'common.save' }))
+    await waitFor(() =>
+      expect(patchStorage).toHaveBeenCalledWith(
+        'storage-1',
+        expect.objectContaining({
+          endpoint: 'https://s3.oss-cn-beijing.aliyuncs.com',
+          forcePathStyle: false,
+        }),
+      ),
+    )
+  })
+
   it('keeps write-only credentials blank while editing and omits them from an ordinary update', async () => {
     vi.stubGlobal('ResizeObserver', TestResizeObserver)
     vi.mocked(patchStorage).mockResolvedValue(storage)

@@ -9,9 +9,13 @@ export function formatError(error: unknown): string {
   if (!(error instanceof Error)) return String(error)
 
   const parts: string[] = [error.message]
+  // Storage errors retain their original SDK cause for recovery, but the cause
+  // may contain signed requests or raw XML. Never flatten it into an access log.
+  if ('storageDiagnostics' in error) return error.message
   let cause = (error as { cause?: unknown }).cause
   while (cause instanceof Error) {
     parts.push(cause.message)
+    if ('storageDiagnostics' in cause) return parts.join(' <- ')
     cause = (cause as { cause?: unknown }).cause
   }
   if (cause !== undefined) parts.push(String(cause))

@@ -154,6 +154,9 @@ export function StorageFormDrawer({ open, onOpenChange, storage, onCreated }: St
   function handleEndpointChange(value: string) {
     form.setValue('endpoint', value, { shouldDirty: true, shouldValidate: true })
     const normalized = value.replace(/^https?:\/\//i, '')
+    if (/^s3\.oss-[a-z0-9-]+\.aliyuncs\.com(?:\.cn)?\/?$/i.test(normalized)) {
+      form.setValue('forcePathStyle', false, { shouldDirty: true })
+    }
     const selectedEndpoint = endpointOptions.find((item) => item.endpoint === normalized)
     if (selectedEndpoint) {
       form.setValue('region', selectedEndpoint.region, { shouldDirty: true, shouldValidate: true })

@@ -7247,6 +7247,9 @@ type TransferObjectJSONBodyMode string
 // AbortObjectUploadParams defines parameters for AbortObjectUpload.
 type AbortObjectUploadParams struct {
 	StrictStorageCleanup *AbortObjectUploadParamsStrictStorageCleanup `form:"strictStorageCleanup,omitempty" json:"strictStorageCleanup,omitempty"`
+	UploadHttpStatus     *string                                      `form:"uploadHttpStatus,omitempty" json:"uploadHttpStatus,omitempty"`
+	UploadErrorCode      *string                                      `form:"uploadErrorCode,omitempty" json:"uploadErrorCode,omitempty"`
+	UploadRequestId      *string                                      `form:"uploadRequestId,omitempty" json:"uploadRequestId,omitempty"`
 }
 
 // AbortObjectUploadParamsStrictStorageCleanup defines parameters for AbortObjectUpload.
@@ -16965,6 +16968,42 @@ func NewAbortObjectUploadRequest(server string, id string, uploadSessionId strin
 		if params.StrictStorageCleanup != nil {
 
 			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "strictStorageCleanup", *params.StrictStorageCleanup, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.UploadHttpStatus != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "uploadHttpStatus", *params.UploadHttpStatus, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.UploadErrorCode != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "uploadErrorCode", *params.UploadErrorCode, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
+				return nil, err
+			} else {
+				for _, qp := range strings.Split(queryFrag, "&") {
+					rawQueryFragments = append(rawQueryFragments, qp)
+				}
+			}
+
+		}
+
+		if params.UploadRequestId != nil {
+
+			if queryFrag, err := runtime.StyleParamWithOptions("form", true, "uploadRequestId", *params.UploadRequestId, runtime.StyleParamOptions{ParamLocation: runtime.ParamLocationQuery, Type: "string", Format: ""}); err != nil {
 				return nil, err
 			} else {
 				for _, qp := range strings.Split(queryFrag, "&") {

@@ -3,6 +3,10 @@ main = "./workers/bootstrap.ts"
 compatibility_date = "2026-04-12"
 compatibility_flags = ["nodejs_compat", "global_fetch_strictly_public"]
 
+# Workers has no DOMParser. Pin SDK XML parsing to its non-browser build.
+[alias]
+"@aws-sdk/xml-builder" = "./node_modules/@aws-sdk/xml-builder/dist-cjs/index.js"
+
 [assets]
 binding = "ASSETS"
 not_found_handling = "single-page-application"

@@ -622,6 +622,51 @@ describe('Objects API', () => {
     void db
   })
 
+  it('reports browser upload diagnostics before strict cleanup rejects, and validates diagnostic fields', async () => {
+    const { app, db } = await createTestApp()
+    const headers = await authedHeaders(app)
+    await insertStorage(db)
+    const createdResponse = await app.request('/api/objects', {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'diagnostic.txt', type: 'text/plain', size: 1, parent: '', dirtype: 0 }),
+    })
+    const created = (await createdResponse.json()) as { id: string; upload: { sessionId: string } }
+    const path = `/api/objects/${created.id}/uploads/${created.upload.sessionId}`
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const cleanup = vi.mocked(S3Service.prototype.deleteObject)
+    cleanup.mockRejectedValueOnce(new Error('cleanup denied'))
+    try {
+      const result = await app.request(
+        `${path}?strictStorageCleanup=1&uploadHttpStatus=403&uploadErrorCode=AccessDenied&uploadRequestId=oss-id`,
+        { method: 'DELETE', headers },
+      )
+      expect(result.status).toBe(502)
+      expect(log).toHaveBeenCalledWith(
+        'storage.upload.failed',
+        expect.objectContaining({
+          source: 'browser',
+          httpStatus: 403,
+          code: 'AccessDenied',
+          requestId: 'oss-id',
+        }),
+      )
+      const count = log.mock.calls.length
+      for (const query of [
+        'uploadHttpStatus=999',
+        'uploadErrorCode=https%3A%2F%2Fsigned.test',
+        'uploadRequestId=id%0D%0AAuthorization%3Asecret',
+      ]) {
+        const invalid = await app.request(`${path}?${query}`, { method: 'DELETE', headers })
+        expect(invalid.status).toBe(400)
+      }
+      expect(log.mock.calls).toHaveLength(count)
+      expect(cleanup).toHaveBeenCalledTimes(1)
+    } finally {
+      log.mockRestore()
+    }
+  })
+
   it('DELETE /api/objects/:id soft-deletes a live object → 204 and moves it to trash [spec: objects/trash]', async () => {
     const { app, db } = await createTestApp()
     const headers = await authedHeaders(app)

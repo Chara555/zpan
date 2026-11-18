@@ -1192,6 +1192,46 @@ describe('object usecase', () => {
       expect(cancelDraft).toHaveBeenCalledWith('d1', 'o1')
     })
 
+    it('logs browser upload diagnostics before a strict cleanup failure', async () => {
+      const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const setStatus = vi.fn(),
+        cancelDraft = vi.fn()
+      const { deps } = makeDeps({
+        matter: { get: async () => file('d1', { status: 'draft' }), cancelDraft },
+        s3: {
+          deleteObject: async () => {
+            throw new Error('cleanup denied')
+          },
+        },
+        objectUploadSessions: { get: async () => session(), setStatus },
+      })
+      try {
+        await expect(
+          abortUpload(deps, {
+            orgId: 'o1',
+            objectId: 'd1',
+            sessionId: 'sess-1',
+            actorId: 'u1',
+            strictStorageCleanup: true,
+            uploadFailure: { httpStatus: 403, code: 'AccessDenied', requestId: 'oss-id' },
+          }),
+        ).rejects.toMatchObject({ code: 'storage_failure' })
+        expect(log).toHaveBeenCalledWith(
+          'storage.upload.failed',
+          expect.objectContaining({
+            source: 'browser',
+            httpStatus: 403,
+            code: 'AccessDenied',
+            requestId: 'oss-id',
+          }),
+        )
+        expect(setStatus).not.toHaveBeenCalled()
+        expect(cancelDraft).not.toHaveBeenCalled()
+      } finally {
+        log.mockRestore()
+      }
+    })
+
     it('strict single-PUT abort fails when S3 cleanup fails', async () => {
       const setStatus = vi.fn()
       const cancelDraft = vi.fn()

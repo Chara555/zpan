@@ -46,6 +46,7 @@ import type {
   UpdateSiteWebDavInput,
   UpdateStorageEgressBillingInput,
 } from '@shared/schemas'
+import type { StorageFailureDetails } from '@shared/storage-errors'
 import type {
   AdminAuditEvent,
   AdminDashboardGrowthStats,
@@ -347,11 +348,20 @@ export function completeObjectUpload(id: string, uploadSessionId: string, parts:
 }
 
 // Abort an in-progress upload and discard the draft.
-export function abortObjectUpload(id: string, uploadSessionId: string, opts: { strictStorageCleanup?: boolean } = {}) {
+export function abortObjectUpload(
+  id: string,
+  uploadSessionId: string,
+  opts: { strictStorageCleanup?: boolean; uploadFailure?: StorageFailureDetails } = {},
+) {
   return discard(
     objects[':id'].uploads[':uploadSessionId'].$delete({
       param: { id, uploadSessionId },
-      query: opts.strictStorageCleanup ? { strictStorageCleanup: '1' } : {},
+      query: {
+        ...(opts.strictStorageCleanup ? { strictStorageCleanup: '1' as const } : {}),
+        ...(opts.uploadFailure?.httpStatus ? { uploadHttpStatus: String(opts.uploadFailure.httpStatus) } : {}),
+        ...(opts.uploadFailure?.code ? { uploadErrorCode: opts.uploadFailure.code } : {}),
+        ...(opts.uploadFailure?.requestId ? { uploadRequestId: opts.uploadFailure.requestId } : {}),
+      },
     }),
   )
 }
