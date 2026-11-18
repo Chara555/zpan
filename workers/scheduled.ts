@@ -13,6 +13,7 @@ import { INSTANCE_TELEMETRY_CRON, reportInstanceTelemetry } from '../server/usec
 import { runLicensingRefresh } from '../server/usecases/site/licensing'
 import { syncPendingCloudTrafficReports } from '../server/usecases/store/traffic-metering'
 import { ZPAN_CLOUD_URL_DEFAULT } from '../shared/constants'
+import { runScheduledTask } from './scheduled-state'
 
 // Subset of the worker Env used by the scheduled handler.
 // The full Env is defined in bootstrap.ts; this avoids circular imports.
@@ -25,65 +26,82 @@ export interface ScheduledEnv {
   [key: string]: unknown
 }
 
-const TRAFFIC_SYNC_CRON = '*/10 * * * *'
-const STATS_ROLLUP_CRON = '10 * * * *'
-const QUOTA_RESET_CRON = '0 0 1 * *'
-const TRASH_PURGE_CRON = '0 4 * * *'
-type ScheduledTrigger = Pick<ScheduledEvent, 'cron'>
+const SCHEDULER_CRON = '*/10 * * * *'
+const MINUTE = 60_000
+const HOUR = 60 * MINUTE
+const DAY = 24 * HOUR
+type ScheduledTrigger = Pick<ScheduledEvent, 'cron' | 'scheduledTime'>
+
+// Latest UTC occurrence. Missed ticks coalesce into one catch-up per task;
+// retries keep the same slot instead of turning slow jobs into ten-minute jobs.
+function periodicSlot(time: number, period: number, offset = 0): number {
+  return Math.floor((time - offset) / period) * period + offset
+}
 
 function envAllowsIp(value: string | undefined): boolean {
   return !['0', 'false', 'no', 'off'].includes(value?.trim().toLowerCase() ?? '')
 }
 
 export async function handleScheduled(event: ScheduledTrigger, env: ScheduledEnv): Promise<void> {
+  // Old schedules can still arrive while Cloudflare propagates trigger changes.
+  if (event.cron !== SCHEDULER_CRON) return
+  if (!Number.isFinite(event.scheduledTime)) throw new Error('Invalid scheduledTime')
+  const time = event.scheduledTime
+  const now = new Date(time)
   const platform = createCloudflarePlatform(env)
   const deps = createDeps(platform)
   const cloudBaseUrl = env.ZPAN_CLOUD_URL ?? ZPAN_CLOUD_URL_DEFAULT
-  if (event.cron === TRAFFIC_SYNC_CRON) {
-    await deps.quota.reconcileFreePlanBaselines()
-    await Promise.all([
-      syncPendingCloudTrafficReports(deps, { cloudBaseUrl }),
-      syncPendingRemoteDownloadUsageReports(deps, { cloudBaseUrl }),
-      backgroundJobsEnabled(platform) ? sweepMediaLibraries(deps, { cloudBaseUrl }) : undefined,
-    ])
-    return
+  const traffic = periodicSlot(time, 10 * MINUTE)
+  const hourly = periodicSlot(time, HOUR, 10 * MINUTE)
+  const monthly = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)
+  const tasks: { name: string; slot: number; run: () => Promise<unknown> }[] = [
+    { name: 'baselines', slot: traffic, run: () => deps.quota.reconcileFreePlanBaselines() },
+    { name: 'traffic', slot: traffic, run: () => syncPendingCloudTrafficReports(deps, { cloudBaseUrl }) },
+    {
+      name: 'remote-download',
+      slot: traffic,
+      run: () => syncPendingRemoteDownloadUsageReports(deps, { cloudBaseUrl }),
+    },
+    { name: 'stats', slot: hourly, run: () => deps.adminStats.refreshHourlyRollups(now) },
+    { name: 'webdav-locks', slot: hourly, run: () => deps.webdavState.purgeExpiredLocks() },
+    { name: 'resource-changes', slot: hourly, run: () => purgeExpiredResourceChanges(deps, now) },
+    { name: 'image-domains', slot: hourly, run: () => reconcileImageDomains(deps) },
+    { name: 'quota-reset', slot: monthly, run: () => createQuotaRepo(platform.db).resetExpiredTrafficQuotas() },
+    {
+      name: 'trash',
+      slot: periodicSlot(time, DAY, 4 * HOUR),
+      run: () => purgeExpiredTrash(deps, resolveTrashRetentionDays(env.ZPAN_TRASH_RETENTION_DAYS)),
+    },
+    { name: 'licensing', slot: periodicSlot(time, 6 * HOUR), run: () => runLicensingRefresh(deps, cloudBaseUrl) },
+    {
+      name: 'telemetry',
+      slot: periodicSlot(time, 12 * HOUR),
+      run: () =>
+        reportInstanceTelemetry(deps, {
+          config: { allowIp: envAllowsIp(env.ZPAN_TELEMETRY_ALLOW_IP) },
+          cron: INSTANCE_TELEMETRY_CRON,
+          trigger: 'scheduled',
+          runtime: { runtime: 'workerd', platform: 'cloudflare-workers' },
+        }),
+    },
+  ]
+  if (backgroundJobsEnabled(platform)) {
+    tasks.push({ name: 'media-library', slot: traffic, run: () => sweepMediaLibraries(deps, { cloudBaseUrl }) })
   }
-
-  if (event.cron === STATS_ROLLUP_CRON) {
-    const now = new Date()
-    await Promise.all([
-      deps.adminStats.refreshHourlyRollups(now),
-      deps.webdavState.purgeExpiredLocks(),
-      purgeExpiredResourceChanges(deps, now),
-      reconcileImageDomains(deps),
-    ])
-    return
-  }
-
-  if (event.cron === QUOTA_RESET_CRON) {
-    await createQuotaRepo(platform.db).resetExpiredTrafficQuotas()
-    return
-  }
-
-  if (event.cron === TRASH_PURGE_CRON) {
-    await purgeExpiredTrash(deps, resolveTrashRetentionDays(env.ZPAN_TRASH_RETENTION_DAYS))
-    return
-  }
-
-  if (event.cron === INSTANCE_TELEMETRY_CRON) {
-    await reportInstanceTelemetry(deps, {
-      config: {
-        allowIp: envAllowsIp(env.ZPAN_TELEMETRY_ALLOW_IP),
-      },
-      cron: event.cron,
-      trigger: 'scheduled',
-      runtime: {
-        runtime: 'workerd',
-        platform: 'cloudflare-workers',
-      },
-    })
-    return
-  }
-
-  await runLicensingRefresh(deps, cloudBaseUrl)
+  const results = await Promise.allSettled(
+    tasks.map(async ({ name, slot, run }) => {
+      try {
+        await runScheduledTask(env.DB, name, slot, run)
+      } catch (error) {
+        console.error('scheduled.task.failed', { name, slot, error })
+        throw error
+      }
+    }),
+  )
+  const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+  if (failures.length)
+    throw new AggregateError(
+      failures.map((result) => result.reason),
+      'Scheduled tasks failed',
+    )
 }

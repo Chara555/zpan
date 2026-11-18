@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { syncPendingRemoteDownloadUsageReports } from '../server/usecases/downloads/remote-download-usage'
 import { sweepMediaLibraries } from '../server/usecases/media-library-scan'
+import { purgeExpiredTrash } from '../server/usecases/object'
 import { reconcileImageDomains } from '../server/usecases/site/image-domain-provider'
-import { INSTANCE_TELEMETRY_CRON, reportInstanceTelemetry } from '../server/usecases/site/instance-telemetry'
+import { reportInstanceTelemetry } from '../server/usecases/site/instance-telemetry'
 import { runLicensingRefresh } from '../server/usecases/site/licensing'
 import { syncPendingCloudTrafficReports } from '../server/usecases/store/traffic-metering'
 import { handleScheduled } from '../workers/scheduled'
@@ -67,99 +68,86 @@ vi.mock('../server/usecases/media-library-scan', () => ({
   sweepMediaLibraries: vi.fn(),
 }))
 
+const runTask = vi.hoisted(() => vi.fn(async (_db, _name, _slot, run) => run()))
+vi.mock('../workers/scheduled-state', () => ({ runScheduledTask: runTask }))
+vi.mock('../server/usecases/object', () => ({
+  purgeExpiredTrash: vi.fn(),
+  resolveTrashRetentionDays: () => 30,
+}))
+
+async function tick(time: string, cron = '*/10 * * * *', extra = {}) {
+  await handleScheduled({ cron, scheduledTime: Date.parse(time) }, { DB: {} as D1Database, ...extra })
+}
+
 describe('handleScheduled', () => {
   beforeEach(() => {
-    vi.mocked(syncPendingCloudTrafficReports).mockReset()
-    vi.mocked(syncPendingRemoteDownloadUsageReports).mockReset()
-    vi.mocked(sweepMediaLibraries).mockReset()
-    vi.mocked(reportInstanceTelemetry).mockReset()
-    vi.mocked(runLicensingRefresh).mockReset()
-    vi.mocked(reconcileImageDomains).mockReset()
-    mockResetExpiredTrafficQuotas.mockReset()
-    refreshHourlyRollups.mockReset()
-    purgeExpiredLocks.mockReset()
-    reconcileFreePlanBaselines.mockReset()
-    purgeResourceChanges.mockReset()
+    vi.clearAllMocks()
   })
 
-  it('syncs usage reports on the traffic cron only', async () => {
-    await handleScheduled({ cron: '*/10 * * * *' }, { DB: {} as D1Database, ZPAN_CLOUD_URL: 'https://cloud.example' })
-
-    expect(syncPendingCloudTrafficReports).toHaveBeenCalledWith(fakeDeps, { cloudBaseUrl: 'https://cloud.example' })
-    expect(syncPendingRemoteDownloadUsageReports).toHaveBeenCalledWith(fakeDeps, {
-      cloudBaseUrl: 'https://cloud.example',
-    })
-    expect(sweepMediaLibraries).toHaveBeenCalledWith(fakeDeps, { cloudBaseUrl: 'https://cloud.example' })
-    expect(refreshHourlyRollups).not.toHaveBeenCalled()
-    expect(reconcileFreePlanBaselines).toHaveBeenCalledOnce()
-    expect(runLicensingRefresh).not.toHaveBeenCalled()
-    expect(reportInstanceTelemetry).not.toHaveBeenCalled()
-  })
-
-  it('skips the media library sweep where background jobs are disabled', async () => {
-    await handleScheduled({ cron: '*/10 * * * *' }, { DB: {} as D1Database, ZPAN_ARCHIVE_JOBS_ENABLED: 'false' })
-
+  it('runs only the ten-minute jobs between slower boundaries', async () => {
+    await tick('2026-11-18T03:20:00Z')
     expect(syncPendingCloudTrafficReports).toHaveBeenCalledOnce()
-    expect(sweepMediaLibraries).not.toHaveBeenCalled()
-  })
-
-  it('refreshes hourly rollups on the dedicated stats cron only', async () => {
-    await handleScheduled({ cron: '10 * * * *' }, { DB: {} as D1Database })
-
-    expect(refreshHourlyRollups).toHaveBeenCalledOnce()
-    expect(sweepMediaLibraries).not.toHaveBeenCalled()
-    expect(purgeExpiredLocks).toHaveBeenCalledOnce()
+    expect(syncPendingRemoteDownloadUsageReports).toHaveBeenCalledOnce()
+    expect(sweepMediaLibraries).toHaveBeenCalledOnce()
+    expect(purgeExpiredTrash).toHaveBeenCalledWith(fakeDeps, 30)
+    expect(mockResetExpiredTrafficQuotas).toHaveBeenCalledOnce()
     expect(purgeResourceChanges).toHaveBeenCalledOnce()
-    expect(reconcileImageDomains).toHaveBeenCalledWith(fakeDeps)
-    expect(reconcileFreePlanBaselines).not.toHaveBeenCalled()
-    expect(syncPendingCloudTrafficReports).not.toHaveBeenCalled()
-    expect(syncPendingRemoteDownloadUsageReports).not.toHaveBeenCalled()
+    // Slower jobs receive their most recent due slot, never a new slot each tick.
+    expect(runTask.mock.calls.find((c) => c[1] === 'stats')?.[2]).toBe(Date.parse('2026-11-18T03:10:00Z'))
+    expect(runTask.mock.calls.find((c) => c[1] === 'licensing')?.[2]).toBe(Date.parse('2026-11-18T00:00:00Z'))
+  })
+
+  it('uses the scheduled UTC time even when delivery is delayed', async () => {
+    await tick('2026-12-01T00:00:00Z')
+    expect(runTask.mock.calls.find((c) => c[1] === 'quota-reset')?.[2]).toBe(Date.parse('2026-12-01T00:00:00Z'))
+    expect(runTask.mock.calls.find((c) => c[1] === 'stats')?.[2]).toBe(Date.parse('2026-11-30T23:10:00Z'))
+    expect(runTask.mock.calls.find((c) => c[1] === 'trash')?.[2]).toBe(Date.parse('2026-11-30T04:00:00Z'))
+    expect(reportInstanceTelemetry).toHaveBeenCalledWith(fakeDeps, expect.objectContaining({ cron: '0 */12 * * *' }))
+  })
+
+  it('preserves UTC boundaries for hourly, daily, six-hour and twelve-hour tasks', async () => {
+    await tick('2026-11-18T12:10:00Z')
+    for (const [name, time] of [
+      ['stats', '2026-11-18T12:10:00Z'],
+      ['trash', '2026-11-18T04:00:00Z'],
+      ['licensing', '2026-11-18T12:00:00Z'],
+      ['telemetry', '2026-11-18T12:00:00Z'],
+      ['quota-reset', '2026-11-01T00:00:00Z'],
+    ])
+      expect(runTask.mock.calls.find((c) => c[1] === name)?.[2]).toBe(Date.parse(time))
+  })
+
+  it('rejects invalid scheduled times', async () => {
+    await expect(tick('invalid')).rejects.toThrow('Invalid scheduledTime')
+    expect(runTask).not.toHaveBeenCalled()
+  })
+
+  it('ignores legacy and unknown triggers during propagation', async () => {
+    await tick('2026-11-18T00:00:00Z', '0 */6 * * *')
+    await tick('2026-11-18T00:00:00Z', 'unknown')
+    expect(runTask).not.toHaveBeenCalled()
     expect(runLicensingRefresh).not.toHaveBeenCalled()
   })
 
-  it('refreshes licensing on the licensing cron only', async () => {
-    await handleScheduled({ cron: '0 */6 * * *' }, { DB: {} as D1Database, ZPAN_CLOUD_URL: 'https://cloud.example' })
-
-    expect(runLicensingRefresh).toHaveBeenCalledWith(fakeDeps, 'https://cloud.example')
-    expect(syncPendingCloudTrafficReports).not.toHaveBeenCalled()
-    expect(syncPendingRemoteDownloadUsageReports).not.toHaveBeenCalled()
-    expect(reportInstanceTelemetry).not.toHaveBeenCalled()
-  })
-
-  it('resets expired traffic quotas on the monthly reset cron only', async () => {
-    await handleScheduled({ cron: '0 0 1 * *' }, { DB: {} as D1Database, ZPAN_CLOUD_URL: 'https://cloud.example' })
-
-    expect(mockResetExpiredTrafficQuotas).toHaveBeenCalled()
-    expect(mockCreateQuotaRepo).toHaveBeenCalledWith('db')
-    expect(runLicensingRefresh).not.toHaveBeenCalled()
-    expect(syncPendingCloudTrafficReports).not.toHaveBeenCalled()
-    expect(syncPendingRemoteDownloadUsageReports).not.toHaveBeenCalled()
-    expect(reportInstanceTelemetry).not.toHaveBeenCalled()
-  })
-
-  it('reports instance telemetry on the 12-hour telemetry cron only', async () => {
-    await handleScheduled(
-      { cron: INSTANCE_TELEMETRY_CRON },
-      {
-        DB: {} as D1Database,
-        ZPAN_CLOUD_URL: 'https://cloud.example',
-      },
-    )
-
-    expect(reportInstanceTelemetry).toHaveBeenCalledTimes(1)
-    expect(reportInstanceTelemetry).toHaveBeenCalledWith(fakeDeps, {
-      config: {
-        allowIp: true,
-      },
-      cron: '0 */12 * * *',
-      trigger: 'scheduled',
-      runtime: {
-        runtime: 'workerd',
-        platform: 'cloudflare-workers',
-      },
+  it('preserves the background-job and telemetry IP settings', async () => {
+    await tick('2026-11-18T12:00:00Z', undefined, {
+      ZPAN_ARCHIVE_JOBS_ENABLED: 'false',
+      ZPAN_TELEMETRY_ALLOW_IP: 'off',
     })
-    expect(runLicensingRefresh).not.toHaveBeenCalled()
-    expect(syncPendingCloudTrafficReports).not.toHaveBeenCalled()
-    expect(syncPendingRemoteDownloadUsageReports).not.toHaveBeenCalled()
+    expect(sweepMediaLibraries).not.toHaveBeenCalled()
+    expect(reportInstanceTelemetry).toHaveBeenCalledWith(
+      fakeDeps,
+      expect.objectContaining({ config: { allowIp: false } }),
+    )
+  })
+
+  it('waits for independent jobs and surfaces errors without blocking other work', async () => {
+    reconcileFreePlanBaselines.mockRejectedValueOnce(new Error('baseline failure'))
+    await expect(tick('2026-11-18T12:10:00Z')).rejects.toThrow()
+    expect(syncPendingCloudTrafficReports).toHaveBeenCalledOnce()
+    expect(refreshHourlyRollups).toHaveBeenCalledOnce()
+    expect(purgeExpiredLocks).toHaveBeenCalledOnce()
+    expect(reconcileImageDomains).toHaveBeenCalledOnce()
+    expect(runLicensingRefresh).toHaveBeenCalledOnce()
   })
 })
