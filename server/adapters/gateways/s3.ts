@@ -48,7 +48,9 @@ export class S3Service implements S3Gateway {
   private async fetchStorage(url: string, init: RequestInit | undefined, operation: string): Promise<Response> {
     let response: Response
     try {
-      response = await fetch(url, init)
+      // Workers may convert cacheable HEAD misses to GET, invalidating SigV4.
+      // Verification and private reads must reach storage without an edge cache.
+      response = await fetch(url, { ...init, cache: 'no-store' })
     } catch (cause) {
       throw storageRequestError(operation, storageFailureDetails(cause), cause)
     }

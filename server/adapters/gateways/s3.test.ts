@@ -282,6 +282,7 @@ describe('S3Service', () => {
       await expect(service.createMultipartUpload(storage, 'video.mp4', 'video/mp4')).resolves.toBe('upload-1')
 
       expect(fetchMock).toHaveBeenCalledWith('https://signed-url.example.com', {
+        cache: 'no-store',
         method: 'POST',
         headers: { 'Content-Type': 'video/mp4' },
       })
@@ -304,7 +305,7 @@ describe('S3Service', () => {
         expect.objectContaining({ input: { Bucket: 'my-bucket', Key: 'unknown.bin' } }),
         { expiresIn: 3600 },
       )
-      expect(fetchMock).toHaveBeenCalledWith('https://signed-url.example.com', { method: 'POST' })
+      expect(fetchMock).toHaveBeenCalledWith('https://signed-url.example.com', { method: 'POST', cache: 'no-store' })
     })
 
     it('fails create multipart uploads when S3 omits the upload id', async () => {
@@ -332,6 +333,7 @@ describe('S3Service', () => {
       ).resolves.toBeUndefined()
 
       expect(fetchMock).toHaveBeenCalledWith('https://signed-url.example.com', {
+        cache: 'no-store',
         method: 'POST',
         headers: { 'Content-Type': 'application/xml' },
         body: '<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>&quot;etag-1&quot;</ETag></Part><Part><PartNumber>2</PartNumber><ETag>&quot;etag&amp;2&quot;</ETag></Part></CompleteMultipartUpload>',
@@ -377,7 +379,7 @@ describe('S3Service', () => {
 
       await expect(service.abortMultipartUpload(storage, 'video.mp4', 'upload-1')).resolves.toBeUndefined()
 
-      expect(fetchMock).toHaveBeenCalledWith('https://signed-url.example.com', { method: 'DELETE' })
+      expect(fetchMock).toHaveBeenCalledWith('https://signed-url.example.com', { method: 'DELETE', cache: 'no-store' })
       expect(mockSend).not.toHaveBeenCalled()
     })
   })
@@ -404,7 +406,7 @@ describe('S3Service', () => {
         expect.objectContaining({ input: { Bucket: 'my-bucket', Key: 'test.png' } }),
         { expiresIn: 3600 },
       )
-      expect(fetch).toHaveBeenCalledWith('https://signed-url.example.com', { method: 'HEAD' })
+      expect(fetch).toHaveBeenCalledWith('https://signed-url.example.com', { method: 'HEAD', cache: 'no-store' })
       expect(mockSend).not.toHaveBeenCalled()
     })
     it('does not invent a content type when storage omits it', async () => {
@@ -434,7 +436,7 @@ describe('S3Service', () => {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(new Response(bytes)))
 
       await expect(service.getObjectBytes(storage, 'test.bin')).resolves.toEqual(bytes)
-      expect(fetch).toHaveBeenCalledWith('https://signed-url.example.com', undefined)
+      expect(fetch).toHaveBeenCalledWith('https://signed-url.example.com', { cache: 'no-store' })
     })
 
     it('sends Range when reading partial object bytes', async () => {
@@ -443,6 +445,7 @@ describe('S3Service', () => {
 
       await expect(service.getObjectBytes(storage, 'test.bin', 'bytes=0-2')).resolves.toEqual(bytes)
       expect(fetch).toHaveBeenCalledWith('https://signed-url.example.com', {
+        cache: 'no-store',
         headers: { Range: 'bytes=0-2' },
       })
     })
@@ -490,6 +493,7 @@ describe('S3Service', () => {
         },
       )
       expect(fetch).toHaveBeenCalledWith('https://signed-url.example.com', {
+        cache: 'no-store',
         method: 'PUT',
         headers: { 'x-amz-copy-source': 'my-bucket/src.jpg' },
       })
@@ -591,6 +595,7 @@ describe('S3Service', () => {
         1024 * 1024,
       )
       expect(fetchMock).toHaveBeenCalledWith('https://signed-url.example.com', {
+        cache: 'no-store',
         method: 'PUT',
         headers: {
           'Content-Type': 'video/mp4',
@@ -627,6 +632,7 @@ describe('S3Service', () => {
       await expect(service.putObject(storage, 'videos/test.mp4', body, 'video/mp4')).resolves.toBe(3)
 
       expect(fetchMock).toHaveBeenNthCalledWith(1, 'https://signed-url.example.com', {
+        cache: 'no-store',
         method: 'POST',
         headers: { 'Content-Type': 'video/mp4' },
       })
@@ -645,7 +651,7 @@ describe('S3Service', () => {
       expect(fetchMock).toHaveBeenNthCalledWith(
         2,
         'https://signed-url.example.com',
-        expect.objectContaining({ method: 'POST' }),
+        expect.objectContaining({ method: 'POST', cache: 'no-store' }),
       )
     })
 
@@ -662,7 +668,10 @@ describe('S3Service', () => {
 
       await expect(service.putObject(storage, 'empty.bin', bytesStream(), 'application/octet-stream')).resolves.toBe(0)
 
-      expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://signed-url.example.com', { method: 'DELETE' })
+      expect(fetchMock).toHaveBeenNthCalledWith(2, 'https://signed-url.example.com', {
+        method: 'DELETE',
+        cache: 'no-store',
+      })
       expect(mockSend).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({
@@ -692,7 +701,10 @@ describe('S3Service', () => {
         service.putObject(storage, 'fail.mp4', bytesStream(new Uint8Array([1])), 'video/mp4'),
       ).rejects.toThrow('part failed')
 
-      expect(fetchMock).toHaveBeenLastCalledWith('https://signed-url.example.com', { method: 'DELETE' })
+      expect(fetchMock).toHaveBeenLastCalledWith('https://signed-url.example.com', {
+        method: 'DELETE',
+        cache: 'no-store',
+      })
     })
 
     it('propagates S3 errors', async () => {

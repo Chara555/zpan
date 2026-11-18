@@ -98,3 +98,16 @@ raw error header is logged. If a 403 has no usable provider diagnostics, a singl
 GET with `Range: bytes=0-0` obtains a structured error; a successful response is
 cancelled without reading the object. HEAD denial still rejects confirmation,
 even if GET succeeds. HEAD and probe/cleanup errors are retained separately.
+
+
+Server-side presigned storage fetches explicitly use `cache: 'no-store'`.
+Cloudflare can convert a cacheable HEAD cache miss into GET upstream, which
+invalidates the method-bound S3 V4 signature (OSS EC `0002-00000429`). Bypassing
+the cache preserves the signed method and obtains fresh verification/read
+metadata. This does not rewrite signed URLs or skip HEAD/ETag verification.
+The same setting applies to the existing multipart/stream fetch helper.
+
+References:
+- https://developers.cloudflare.com/cache/concepts/cache-behavior/
+- https://developers.cloudflare.com/workers/examples/cache-using-fetch/
+- https://help.aliyun.com/zh/oss/user-guide/0002-00000429
